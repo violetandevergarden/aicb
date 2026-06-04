@@ -13,6 +13,8 @@ limitations under the License.
 
 from workload_generator.mocked_model.training import MockedDeepSeek
 import workload_generator.mocked_model.training.MockedDeepspeed
+from workload_generator.mocked_model.training.MockedDeepspeed import DeepspeedForCausalLM
+from workload_generator.SimAI_deepspeed_workload_generator import DeepSpeedSIMAIWorkload
 from workload_generator.mocked_model.training.MockedMegatron import *
 from workload_generator.mocked_model.training.MockedDeepSeek import *
 from workload_generator.mocked_model.MockedModel import MockedParam, MockedModel
@@ -937,19 +939,23 @@ if __name__ == "__main__":
     print(args)
     if args.frame == "DeepSeek":
         model = DeepSeekV3Model(args)
+    elif args.frame == "DeepSpeed":
+        model = DeepspeedForCausalLM(args)
     else:
         model = MegatronModel(args)
     result_dir = "results/workload/"
     if not os.path.isdir(result_dir):
         os.makedirs(result_dir)
     filename = f"{args.gpu_type}-{args.model_name}-world_size{args.world_size}-tp{args.tensor_model_parallel_size}-pp{args.pipeline_model_parallel}-ep{args.expert_model_parallel_size}-gbs{args.global_batch}-mbs{args.micro_batch}-seq{args.seq_length}-MOE-{args.moe_enable}-GEMM-{args.moe_grouped_gemm}-flash_attn-{args.use_flash_attn}"
+    if args.frame == "DeepSpeed":
+        filename += f"-deepspeed_zero{args.stage}"
     filepath = os.path.join(result_dir, filename)
     params = model.parameters()
     # work = SIMAI_workload(model, args, GPU_Tensor_core.A100, "gpt13B")
     # name_layers = work.workload_generate()
     # work.dump_file("test")
     print(sum(p.numel() for p in params))
-    if args.aiob_enable:
+    if args.aiob_enable and args.frame != "DeepSpeed":
         params = model.parameters()
         args.model_param = sum(p.numel() for p in params)
         if args.comp_filepath == None:
@@ -983,7 +989,12 @@ if __name__ == "__main__":
     # print(args)
     else:
 
-        work = SIMAI_workload(model, args, None)
+        if args.aiob_enable and args.frame == "DeepSpeed":
+            print("[WARN]: DeepSpeed SimAI workload does not support aiob_enable; using default compute time")
+        if args.frame == "DeepSpeed":
+            work = DeepSpeedSIMAIWorkload(model, args)
+        else:
+            work = SIMAI_workload(model, args, None)
         name_layers = work.workload_generate()
         work.dump_file(filepath)
         print(f"workload save in : {filepath}.txt")

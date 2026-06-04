@@ -807,6 +807,14 @@ def get_collective_test_params(parser: argparse.ArgumentParser):
 
 def get_simAI_workload_params(parser: argparse.ArgumentParser):
     parser.add_argument("--overlap_version", action="store_true")
+    parser.add_argument(
+        "--simai_include_non_amp_init",
+        action="store_true",
+        help=(
+            "Include DeepSpeed non-AMP init communications in SimAI training "
+            "workload output."
+        ),
+    )
 
 def get_moe_params(parser: argparse.ArgumentParser):
     parser.add_argument('--moe_enable', action="store_true")
