@@ -18,7 +18,7 @@ from workload_generator.SimAI_deepspeed_workload_generator import create_deepspe
 from workload_generator.mocked_model.training.MockedMegatron import *
 from workload_generator.mocked_model.training.MockedDeepSeek import *
 from workload_generator.mocked_model.MockedModel import MockedParam, MockedModel
-from workload_generator.simai_work_item import Work_Item
+from workload_generator.SimAI_work_item import Work_Item
 from utils.utils import CommType, get_params, get_comp_out, extract_averages
 import os
 from typing import List, Tuple

@@ -9,7 +9,7 @@ The stage-specific implementations live in:
 
 import math
 
-from workload_generator.simai_work_item import Work_Item
+from workload_generator.SimAI_work_item import Work_Item
 
 
 class BaseDeepSpeedSIMAIWorkload:
