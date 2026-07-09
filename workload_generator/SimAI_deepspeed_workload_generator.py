@@ -166,6 +166,39 @@ class BaseDeepSpeedSIMAIWorkload:
             dp_comm_size=dp_comm_size,
         )
 
+    def _append_simai_post_items(self):
+        """Append generic SimAI post-layer rows for scheduler compatibility."""
+        if not self.compute_enable:
+            return
+
+        for i in range(3):
+            self._append_item(
+                name=f"cross_entropy{i + 1}",
+                forward_compute_time=self.default_compute_time,
+                forward_comm="ALLREDUCE",
+                forward_comm_size=self.args.seq_length * self.args.micro_batch * 4,
+                backward_compute_time=self.default_compute_time,
+                backward_comm="NONE",
+                backward_comm_size=0,
+                dp_compute_time=self.default_compute_time,
+                dp_comm="NONE",
+                dp_comm_size=0,
+            )
+
+        for i in range(4):
+            self._append_item(
+                name=f"optimizer{i + 1}",
+                forward_compute_time=self.default_compute_time,
+                forward_comm="ALLREDUCE",
+                forward_comm_size=4,
+                backward_compute_time=self.default_compute_time,
+                backward_comm="NONE",
+                backward_comm_size=0,
+                dp_compute_time=self.default_compute_time,
+                dp_comm="NONE",
+                dp_comm_size=0,
+            )
+
     def _append_compute_for_param(self, stage, param, index=None):
         if not self.compute_enable:
             return

@@ -230,6 +230,23 @@ zero3_grad_norm
 zero3_step_persistent_param_allgather
 ```
 
+After ZeRO-specific step communication, the SimAI DeepSpeed generator also
+appends the generic SimAI post-layer rows:
+
+```text
+cross_entropy1
+cross_entropy2
+cross_entropy3
+optimizer1
+optimizer2
+optimizer3
+optimizer4
+```
+
+These rows match the existing `SIMAI_workload` abstraction and keep
+`simai-flow-scheduler` post-item grouping compatible with ordinary AICB
+training workloads.
+
 ZeRO-3 layer-level behavior:
 
 - Keeps `SIMAI_workload`-style names such as `embedding_layer`, `layernorm`, `attention_layer`, and `mlp_layer`.

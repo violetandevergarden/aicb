@@ -210,6 +210,7 @@ class DeepSpeedSIMAIStage3Workload(BaseDeepSpeedSIMAIWorkload):
             self._gather_param_directly(
                 param, "step", "zero3_step_persistent_param_allgather"
             )
+        self._append_simai_post_items()
 
     def _append_stage3(self):
         persistent_params = self._mark_persistent_parameters()
@@ -274,6 +275,7 @@ class DeepSpeedSIMAIStage3LayerWorkload(BaseDeepSpeedSIMAIWorkload):
         self._append_dp_comm_item(
             "zero3_grad_norm", dp_comm="ALLREDUCE", dp_comm_size=8
         )
+        self._append_simai_post_items()
 
     def workload_generate(self):
         self._compute_ga_num()

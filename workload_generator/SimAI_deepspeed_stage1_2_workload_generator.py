@@ -110,6 +110,7 @@ class DeepSpeedSIMAIStage1Or2Workload(BaseDeepSpeedSIMAIWorkload):
         if self.args.stage == 2:
             self._append_dp_comm_item("zero2_grad_norm", dp_comm="ALLREDUCE", dp_comm_size=8)
         self._append_total_sharded_allgather(f"zero{self.args.stage}_param_allgather")
+        self._append_simai_post_items()
 
     def workload_generate(self):
         self._compute_ga_num()
@@ -177,6 +178,7 @@ class DeepSpeedSIMAIStage1Or2LayerWorkload(DeepSpeedSIMAIStage1Or2Workload):
                 "zero2_grad_norm", dp_comm="ALLREDUCE", dp_comm_size=8
             )
         self._append_total_sharded_allgather(f"zero{self.args.stage}_param_allgather")
+        self._append_simai_post_items()
 
     def workload_generate(self):
         self._compute_ga_num()
