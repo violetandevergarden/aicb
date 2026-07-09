@@ -21,17 +21,18 @@ workload_generator/SimAI_deepspeed_stage3_workload_generator.py
 
 File responsibilities:
 
-- `SimAI_deepspeed_workload_generator.py`: shared `Work_Item`, shared append/dump/init helpers, and the compatibility factory `DeepSpeedSIMAIWorkload`.
+- `simai_work_item.py`: shared SimAI `Work_Item` dataclass.
+- `SimAI_deepspeed_workload_generator.py`: shared append/dump/init helpers, the `create_deepspeed_simai_workload` factory, and a compatibility wrapper named `DeepSpeedSIMAIWorkload`.
 - `SimAI_deepspeed_stage1_2_workload_generator.py`: ZeRO-1 and ZeRO-2 SimAI text workload logic.
 - `SimAI_deepspeed_stage3_workload_generator.py`: ZeRO-3 SimAI text workload logic. This is the main file to extend for FSDP/ZeRO-3 communication timing.
 
-The existing training entry still imports:
+The existing training entry imports the explicit factory:
 
 ```python
-from workload_generator.SimAI_deepspeed_workload_generator import DeepSpeedSIMAIWorkload
+from workload_generator.SimAI_deepspeed_workload_generator import create_deepspeed_simai_workload
 ```
 
-`DeepSpeedSIMAIWorkload(model, args)` dispatches by `args.stage`:
+`create_deepspeed_simai_workload(model, args)` dispatches by `args.stage`:
 
 ```text
 stage 1 or 2 -> DeepSpeedSIMAIStage1Or2Workload
@@ -70,6 +71,31 @@ Generate ZeRO-3:
 python -m workload_generator.SimAI_training_workload_generator --frame DeepSpeed --stage 3 --gpu_type A100 --world_size 4 --global_batch 4 --micro_batch 1 --num_layers 2 --hidden_size 16 --ffn_hidden_size 64 --num_attention_heads 4 --model_name test_zero3
 ```
 
+By default, DeepSpeed SimAI output keeps the existing parameter-level ZeRO
+format. This is equivalent to:
+
+```bash
+--simai_deepspeed_granularity param
+```
+
+To generate layer/module-level output closer to `SIMAI_workload` naming, use:
+
+```bash
+--simai_deepspeed_granularity layer
+```
+
+Example ZeRO-3 layer-level workload:
+
+```bash
+python -m workload_generator.SimAI_training_workload_generator --frame DeepSpeed --stage 3 --simai_deepspeed_granularity layer --gpu_type A100 --world_size 4 --global_batch 4 --micro_batch 1 --num_layers 2 --hidden_size 16 --ffn_hidden_size 64 --num_attention_heads 4 --model_name test_zero3_layer
+```
+
+Example ZeRO-2 layer-level workload:
+
+```bash
+python -m workload_generator.SimAI_training_workload_generator --frame DeepSpeed --stage 2 --simai_deepspeed_granularity layer --gpu_type A100 --world_size 4 --global_batch 4 --micro_batch 1 --num_layers 2 --hidden_size 16 --ffn_hidden_size 64 --num_attention_heads 4 --model_name test_zero2_layer
+```
+
 By default, the SimAI text output models steady-state training iteration traffic
 and does not include DeepSpeed non-AMP initialization communication. To include
 init broadcast/all-gather when AMP is disabled, add:
@@ -100,7 +126,8 @@ means no GPU type was provided; it does not affect workload contents.
 Example:
 
 ```text
-A100-test_zero3-world_size4-tp1-pp1-ep1-gbs4-mbs1-seq2048-MOE-False-GEMM-False-flash_attn-False-deepspeed_zero3.txt
+A100-test_zero3-world_size4-tp1-pp1-ep1-gbs4-mbs1-seq2048-MOE-False-GEMM-False-flash_attn-False-deepspeed_zero3-param.txt
+A100-test_zero3_layer-world_size4-tp1-pp1-ep1-gbs4-mbs1-seq2048-MOE-False-GEMM-False-flash_attn-False-deepspeed_zero3-layer.txt
 ```
 
 ## SimAI Text Format
@@ -179,7 +206,7 @@ zero2_param_allgather
 
 ## ZeRO-3
 
-ZeRO-3 behavior:
+ZeRO-3 parameter-level behavior:
 
 - Parameters are assigned stable ids in `model.parameters()` order.
 - Forward emits parameter all-gather before parameter compute.
@@ -201,6 +228,51 @@ zero3_grad_reduce_scatter
 zero3_has_overflow
 zero3_grad_norm
 zero3_step_persistent_param_allgather
+```
+
+ZeRO-3 layer-level behavior:
+
+- Keeps `SIMAI_workload`-style names such as `embedding_layer`, `layernorm`, `attention_layer`, and `mlp_layer`.
+- Emits ZeRO-3/FSDP-like all-gather before each layer/module forward compute.
+- Emits ZeRO-3/FSDP-like all-gather before each layer/module backward compute.
+- Emits reduce-scatter after each layer/module backward weight-gradient compute.
+- Uses the layer/module parameter byte total as the communication size.
+- Does not include parameter ids in item names.
+
+Example item order:
+
+```text
+zero3_forward_allgather_layernorm
+layernorm
+zero3_forward_allgather_embedding_layer
+embedding_layer
+zero3_forward_allgather_attention_layer
+attention_layer
+zero3_forward_allgather_mlp_layer
+mlp_layer
+
+zero3_backward_allgather_mlp_layer
+mlp_layer
+zero3_grad_reducescatter_mlp_layer
+zero3_backward_allgather_attention_layer
+attention_layer
+zero3_grad_reducescatter_attention_layer
+zero3_backward_allgather_embedding_layer
+embedding_layer
+zero3_grad_reducescatter_embedding_layer
+zero3_backward_allgather_layernorm
+layernorm
+zero3_grad_reducescatter_layernorm
+```
+
+ZeRO-1/2 also support `--simai_deepspeed_granularity layer`. Their layer-level
+mode keeps layer/module compute names and emits layer/module gradient
+synchronization rows such as:
+
+```text
+zero1_grad_sync_attention_layer
+zero2_grad_sync_attention_layer
+zero2_grad_sync_mlp_layer
 ```
 
 ## Why Parameter IDs May Skip Numbers

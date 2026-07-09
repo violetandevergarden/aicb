@@ -17,23 +17,10 @@ from workload_generator.SimAI_deepspeed_workload_generator import (
 
 
 class DeepSpeedSIMAIStage1Or2Workload(BaseDeepSpeedSIMAIWorkload):
-    def _append_param_bucketed_dp_comm(self, name, params, bucket_size, comm):
-        bucket_numel = 0
-        bucket_bytes = 0
-        for param in params:
-            if bucket_numel and bucket_numel + param.numel() > bucket_size:
-                self._append_dp_comm_item(name=name, dp_comm=comm, dp_comm_size=bucket_bytes)
-                bucket_numel = 0
-                bucket_bytes = 0
-            bucket_numel += param.numel()
-            bucket_bytes += param.msg_size()
-        if bucket_numel:
-            self._append_dp_comm_item(name=name, dp_comm=comm, dp_comm_size=bucket_bytes)
-
     def _append_stage2_contiguous_reduce_bucket(self, bucket):
         rank_start_end_idx = [[-1, -1, -1]]
         for param in bucket[::-1]:
-            for rank, start_idx, end_idx in self.param_range_map[id(param)]:
+            for rank, start_idx, end_idx in self.param_range_map.get(id(param), []):
                 if rank == rank_start_end_idx[-1][0]:
                     if rank_start_end_idx[-1][-1] != start_idx:
                         print(f"WARNING {rank_start_end_idx[-1]} - {start_idx}")
@@ -128,3 +115,70 @@ class DeepSpeedSIMAIStage1Or2Workload(BaseDeepSpeedSIMAIWorkload):
         self._compute_ga_num()
         self._append_optional_init()
         self._append_stage1_or_2()
+
+
+class DeepSpeedSIMAIStage1Or2LayerWorkload(DeepSpeedSIMAIStage1Or2Workload):
+    def _append_layer_grad_sync(self, layer_name, params, param_bytes):
+        if param_bytes <= 0:
+            return
+        if self.args.stage == 1:
+            self._append_dp_comm_item(
+                name=f"zero1_grad_sync_{layer_name}",
+                dp_comm="ALLREDUCE",
+                dp_comm_size=param_bytes,
+            )
+        elif self.args.contiguous_gradients:
+            self._append_dp_comm_item(
+                name=f"zero2_grad_sync_{layer_name}",
+                dp_comm="REDUCESCATTER",
+                dp_comm_size=param_bytes,
+            )
+        else:
+            self._append_dp_comm_item(
+                name=f"zero2_grad_sync_{layer_name}",
+                dp_comm="ALLREDUCE",
+                dp_comm_size=param_bytes,
+            )
+
+    def _append_layer_stage1_or_2(self):
+        layer_specs = list(self._iter_deepspeed_layer_specs())
+        if not layer_specs:
+            print(
+                "[WARN]: DeepSpeed layer granularity matched no layers; "
+                "falling back to step-only ZeRO items"
+            )
+
+        for _ in range(self.ga_num):
+            for spec in layer_specs:
+                self._append_layer_compute_item(
+                    spec["name"],
+                    forward_compute_time=self.default_compute_time,
+                    backward_compute_time=0,
+                    dp_compute_time=0,
+                )
+
+            for spec in reversed(layer_specs):
+                param_bytes = self._param_bytes(spec["params"])
+                self._append_layer_compute_item(
+                    spec["name"],
+                    forward_compute_time=0,
+                    backward_compute_time=self.default_compute_time,
+                    dp_compute_time=self.default_compute_time,
+                )
+                self._append_layer_grad_sync(spec["name"], spec["params"], param_bytes)
+
+        self._append_dp_comm_item(
+            f"zero{self.args.stage}_has_overflow",
+            dp_comm="ALLREDUCE",
+            dp_comm_size=1,
+        )
+        if self.args.stage == 2:
+            self._append_dp_comm_item(
+                "zero2_grad_norm", dp_comm="ALLREDUCE", dp_comm_size=8
+            )
+        self._append_total_sharded_allgather(f"zero{self.args.stage}_param_allgather")
+
+    def workload_generate(self):
+        self._compute_ga_num()
+        self._append_optional_init()
+        self._append_layer_stage1_or_2()

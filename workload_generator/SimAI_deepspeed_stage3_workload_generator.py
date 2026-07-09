@@ -24,6 +24,46 @@ class DeepSpeedSIMAIStage3Workload(BaseDeepSpeedSIMAIWorkload):
         self._param_queue = deque()
         self._most_recent_step_id_param_fetched_for = defaultdict(lambda: -1)
 
+    def _reset_param_prefetch_queue(self):
+        self._param_queue = deque(
+            (param, step_id)
+            for step_id, param in enumerate(self.all_params + self.all_params[::-1])
+        )
+        self._most_recent_step_id_param_fetched_for = defaultdict(lambda: -1)
+
+    def _record_prefetched_param_step(self, param, step_id):
+        self._most_recent_step_id_param_fetched_for[param.id] = max(
+            step_id,
+            self._most_recent_step_id_param_fetched_for[param.id],
+        )
+
+    def _drop_stale_param_queue_entries(self, step_id):
+        while self._param_queue and self._param_queue[0][1] < step_id:
+            stale_param, stale_step_id = self._param_queue.popleft()
+            if stale_param.has_been_allgather:
+                self._record_prefetched_param_step(stale_param, stale_step_id)
+            else:
+                print(
+                    "WARNING: dropping stale non-prefetched param queue entry "
+                    f"{(stale_param.__dict__, stale_step_id)} before step {step_id}"
+                )
+
+    def _remove_param_queue_entry(self, param, step_id):
+        removed_entry = None
+        remaining_entries = deque()
+        for entry in self._param_queue:
+            queued_param, queued_step_id = entry
+            if (
+                removed_entry is None
+                and queued_param is param
+                and queued_step_id == step_id
+            ):
+                removed_entry = entry
+                continue
+            remaining_entries.append(entry)
+        self._param_queue = remaining_entries
+        return removed_entry
+
     def _mark_persistent_parameters(self):
         persistent_params = []
         total_persistent_parameters = 0
@@ -58,25 +98,16 @@ class DeepSpeedSIMAIStage3Workload(BaseDeepSpeedSIMAIWorkload):
         prefetch_bucket_numel = 0
         prefetch_bucket_bytes = 0
 
+        self._drop_stale_param_queue_entries(step_id)
         if not param.has_been_allgather:
-            while (
-                self._param_queue
-                and self._param_queue[0][0] != param
-                and self._param_queue[0][0].has_been_allgather
-            ):
-                fetched_param, fetched_step_id = self._param_queue.popleft()
-                self._most_recent_step_id_param_fetched_for[fetched_param.id] = max(
-                    fetched_step_id,
-                    self._most_recent_step_id_param_fetched_for[fetched_param.id],
-                )
             prefetch_bucket.append(param)
             prefetch_bucket_numel += param.numel()
             prefetch_bucket_bytes += param.msg_size()
-            future_param, future_step_id = self._param_queue.popleft()
-            if future_param != param:
+            current_entry = self._remove_param_queue_entry(param, step_id)
+            if current_entry is None:
                 print(
-                    f"WARNING: expected {(param.__dict__, step_id)} "
-                    f"but got {(future_param.__dict__, future_step_id)}"
+                    "WARNING: expected current param queue entry "
+                    f"{(param.__dict__, step_id)} but did not find it"
                 )
             param.has_been_allgather = True
             self.current_live_parameters += param.numel()
@@ -87,10 +118,16 @@ class DeepSpeedSIMAIStage3Workload(BaseDeepSpeedSIMAIWorkload):
             and self.current_live_parameters < self.args.max_live_parameters
         ):
             future_param, future_step_id = self._param_queue.popleft()
-            self._most_recent_step_id_param_fetched_for[future_param.id] = max(
-                future_step_id,
-                self._most_recent_step_id_param_fetched_for[future_param.id],
-            )
+            if future_step_id <= step_id:
+                if future_param.has_been_allgather:
+                    self._record_prefetched_param_step(future_param, future_step_id)
+                else:
+                    print(
+                        "WARNING: skipping stale non-prefetched future queue entry "
+                        f"{(future_param.__dict__, future_step_id)} at step {step_id}"
+                    )
+                continue
+            self._record_prefetched_param_step(future_param, future_step_id)
             if future_param.has_been_allgather:
                 continue
             prefetch_bucket.append(future_param)
@@ -100,17 +137,14 @@ class DeepSpeedSIMAIStage3Workload(BaseDeepSpeedSIMAIWorkload):
             prefetch_bucket_bytes += future_param.msg_size()
 
         self._append_stage3_allgather(name, prefetch_bucket_bytes)
-        for bucket_param in prefetch_bucket:
-            self._append_compute_for_param(stage, bucket_param)
+        self._append_compute_for_param(stage, param)
 
     def _partition_param(self, param, step_id):
-        if len(self._param_queue) == 0:
-            param.has_been_allgather = False
-            self.current_live_parameters -= param.numel()
-            return
         if param.ds_persist:
             return
         if self._most_recent_step_id_param_fetched_for[param.id] > step_id:
+            return
+        if not param.has_been_allgather:
             return
         param.has_been_allgather = False
         self.current_live_parameters -= param.numel()
@@ -152,16 +186,12 @@ class DeepSpeedSIMAIStage3Workload(BaseDeepSpeedSIMAIWorkload):
                 )
             else:
                 self._gather_param_prefetch(
-                    param, index, "backward", "zero3_backward_param_allgather"
+                    param, step_id, "backward", "zero3_backward_param_allgather"
                 )
             self._partition_param(param, step_id)
             self._reduce_param_with_bucket(param)
 
-        self._param_queue = deque(
-            (param, step_id)
-            for step_id, param in enumerate(self.all_params + self.all_params[::-1])
-        )
-        self._most_recent_step_id_param_fetched_for = defaultdict(lambda: -1)
+        self._reset_param_prefetch_queue()
 
     def _append_stage3_step(self, persistent_params):
         self._flush_reduce_bucket("zero3_grad_reduce_scatter")
@@ -183,6 +213,7 @@ class DeepSpeedSIMAIStage3Workload(BaseDeepSpeedSIMAIWorkload):
 
     def _append_stage3(self):
         persistent_params = self._mark_persistent_parameters()
+        self._reset_param_prefetch_queue()
         for _ in range(self.ga_num):
             self._append_stage3_forward()
             self._append_stage3_backward()
@@ -192,3 +223,68 @@ class DeepSpeedSIMAIStage3Workload(BaseDeepSpeedSIMAIWorkload):
         self._compute_ga_num()
         self._append_optional_init()
         self._append_stage3()
+
+
+class DeepSpeedSIMAIStage3LayerWorkload(BaseDeepSpeedSIMAIWorkload):
+    def _append_layer_allgather(self, phase, layer_name, param_bytes):
+        if param_bytes <= 0:
+            return
+        self._append_dp_comm_item(
+            name=f"zero3_{phase}_allgather_{layer_name}",
+            dp_comm="ALLGATHER",
+            dp_comm_size=param_bytes,
+        )
+
+    def _append_layer_reduce_scatter(self, layer_name, param_bytes):
+        if param_bytes <= 0:
+            return
+        self._append_dp_comm_item(
+            name=f"zero3_grad_reducescatter_{layer_name}",
+            dp_comm="REDUCESCATTER",
+            dp_comm_size=param_bytes,
+        )
+
+    def _append_layer_stage3_forward(self, layer_specs):
+        for spec in layer_specs:
+            param_bytes = self._param_bytes(spec["params"])
+            self._append_layer_allgather("forward", spec["name"], param_bytes)
+            self._append_layer_compute_item(
+                spec["name"],
+                forward_compute_time=self.default_compute_time,
+                backward_compute_time=0,
+                dp_compute_time=0,
+            )
+
+    def _append_layer_stage3_backward(self, layer_specs):
+        for spec in reversed(layer_specs):
+            param_bytes = self._param_bytes(spec["params"])
+            self._append_layer_allgather("backward", spec["name"], param_bytes)
+            self._append_layer_compute_item(
+                spec["name"],
+                forward_compute_time=0,
+                backward_compute_time=self.default_compute_time,
+                dp_compute_time=self.default_compute_time,
+            )
+            self._append_layer_reduce_scatter(spec["name"], param_bytes)
+
+    def _append_layer_stage3_step(self):
+        self._append_dp_comm_item(
+            "zero3_has_overflow", dp_comm="ALLREDUCE", dp_comm_size=1
+        )
+        self._append_dp_comm_item(
+            "zero3_grad_norm", dp_comm="ALLREDUCE", dp_comm_size=8
+        )
+
+    def workload_generate(self):
+        self._compute_ga_num()
+        self._append_optional_init()
+        layer_specs = list(self._iter_deepspeed_layer_specs())
+        if not layer_specs:
+            print(
+                "[WARN]: DeepSpeed layer granularity matched no layers; "
+                "falling back to step-only ZeRO items"
+            )
+        for _ in range(self.ga_num):
+            self._append_layer_stage3_forward(layer_specs)
+            self._append_layer_stage3_backward(layer_specs)
+        self._append_layer_stage3_step()

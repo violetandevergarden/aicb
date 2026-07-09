@@ -808,6 +808,16 @@ def get_collective_test_params(parser: argparse.ArgumentParser):
 def get_simAI_workload_params(parser: argparse.ArgumentParser):
     parser.add_argument("--overlap_version", action="store_true")
     parser.add_argument(
+        "--simai_deepspeed_granularity",
+        choices=["param", "layer"],
+        default="param",
+        help=(
+            "DeepSpeed SimAI workload granularity. 'param' keeps the existing "
+            "parameter-level ZeRO output; 'layer' emits layer/module-level "
+            "items closer to SIMAI_workload naming."
+        ),
+    )
+    parser.add_argument(
         "--simai_include_non_amp_init",
         action="store_true",
         help=(

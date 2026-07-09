@@ -7,24 +7,9 @@ The stage-specific implementations live in:
 - SimAI_deepspeed_stage3_workload_generator.py
 """
 
-import dataclasses
 import math
 
-
-@dataclasses.dataclass
-class Work_Item:
-    name: str = dataclasses.field(default="none")
-    placeholder: int = dataclasses.field(default=-1)
-    forward_compute_time: int = dataclasses.field(default=0)
-    forward_comm: str = dataclasses.field(default="NONE")
-    forward_comm_size: int = dataclasses.field(default=0)
-    backward_compute_time: int = dataclasses.field(default=0)
-    backward_comm: str = dataclasses.field(default="NONE")
-    backward_comm_size: int = dataclasses.field(default=0)
-    dp_compute_time: int = dataclasses.field(default=0)
-    dp_comm: str = dataclasses.field(default="NONE")
-    dp_comm_size: int = dataclasses.field(default=0)
-    process_time: int = dataclasses.field(default=100)
+from workload_generator.simai_work_item import Work_Item
 
 
 class BaseDeepSpeedSIMAIWorkload:
@@ -49,6 +34,90 @@ class BaseDeepSpeedSIMAIWorkload:
         self.reduce_bucket_bytes = 0
         self.current_live_parameters = 0
         self.param_range_map = self._build_model_gbuf_param_range_map()
+
+    @staticmethod
+    def _module_params(module):
+        if module is None:
+            return []
+        return list(module.parameters())
+
+    def _param_bytes(self, params):
+        return sum(param.msg_size() for param in params)
+
+    def _append_layer_compute_item(
+        self,
+        name,
+        forward_compute_time=0,
+        backward_compute_time=0,
+        dp_compute_time=0,
+    ):
+        if not self.compute_enable:
+            return
+        self._append_item(
+            name=name,
+            forward_compute_time=forward_compute_time,
+            backward_compute_time=backward_compute_time,
+            dp_compute_time=dp_compute_time,
+        )
+
+    def _iter_deepspeed_layer_specs(self):
+        model = getattr(self.model, "model", None)
+        if model is None:
+            print("[WARN]: DeepSpeed layer granularity expects model.model; no layer specs generated")
+            return
+
+        layernorm_params = []
+        embedding_params = []
+        transformer_layer_specs = []
+
+        for layer in getattr(model, "layers", []):
+            input_layernorm = getattr(layer, "input_layernorm", None)
+            if input_layernorm is not None:
+                layernorm_params.extend(self._module_params(input_layernorm))
+
+            self_attn = getattr(layer, "self_attn", None)
+            if self_attn is not None:
+                transformer_layer_specs.append({
+                    "name": "attention_layer",
+                    "params": self._module_params(self_attn),
+                })
+
+            post_attention_layernorm = getattr(layer, "post_attention_layernorm", None)
+            if post_attention_layernorm is not None:
+                layernorm_params.extend(self._module_params(post_attention_layernorm))
+
+            mlp = getattr(layer, "mlp", None)
+            if mlp is not None:
+                transformer_layer_specs.append({
+                    "name": "mlp_layer",
+                    "params": self._module_params(mlp),
+                })
+
+        norm = getattr(model, "norm", None)
+        if norm is not None:
+            layernorm_params.extend(self._module_params(norm))
+
+        embed_tokens = getattr(model, "embed_tokens", None)
+        if embed_tokens is not None:
+            embedding_params.extend(self._module_params(embed_tokens))
+
+        lm_head = getattr(self.model, "lm_head", None)
+        if lm_head is not None:
+            embedding_params.extend(self._module_params(lm_head))
+
+        if layernorm_params:
+            yield {
+                "name": "layernorm",
+                "params": layernorm_params,
+            }
+
+        if embedding_params:
+            yield {
+                "name": "embedding_layer",
+                "params": embedding_params,
+            }
+
+        yield from transformer_layer_specs
 
     def _param_name(self, stage, param, index=None):
         param_id = getattr(param, "id", index)
@@ -203,7 +272,7 @@ class BaseDeepSpeedSIMAIWorkload:
                     f"model_parallel_NPU_group: {self.args.tensor_model_parallel_size} "
                     f"ep: {self.args.expert_model_parallel_size} "
                     f"pp: {self.args.pipeline_model_parallel} "
-                    f"vpp: {self.args.num_layers} "
+                    f"vpp: {self.args.pipeline_model_parallel} "
                     f"ga: {self.ga_num} all_gpus: {self.args.world_size} "
                     f"checkpoints: 0 checkpoint_initiates: 0 "
                 )
@@ -219,25 +288,37 @@ class BaseDeepSpeedSIMAIWorkload:
                 )
 
 
+def create_deepspeed_simai_workload(model, args):
+    granularity = getattr(args, "simai_deepspeed_granularity", "param")
+    if args.stage in (1, 2):
+        from workload_generator.SimAI_deepspeed_stage1_2_workload_generator import (
+            DeepSpeedSIMAIStage1Or2LayerWorkload,
+            DeepSpeedSIMAIStage1Or2Workload,
+        )
+
+        if granularity == "layer":
+            return DeepSpeedSIMAIStage1Or2LayerWorkload(model, args)
+        return DeepSpeedSIMAIStage1Or2Workload(model, args)
+    if args.stage == 3:
+        from workload_generator.SimAI_deepspeed_stage3_workload_generator import (
+            DeepSpeedSIMAIStage3LayerWorkload,
+            DeepSpeedSIMAIStage3Workload,
+        )
+
+        if granularity == "layer":
+            return DeepSpeedSIMAIStage3LayerWorkload(model, args)
+        return DeepSpeedSIMAIStage3Workload(model, args)
+    raise ValueError(f"Unsupported DeepSpeed ZeRO stage: {args.stage}")
+
+
 class DeepSpeedSIMAIWorkload:
     def __new__(cls, model, args):
-        if args.stage in (1, 2):
-            from workload_generator.SimAI_deepspeed_stage1_2_workload_generator import (
-                DeepSpeedSIMAIStage1Or2Workload,
-            )
-
-            return DeepSpeedSIMAIStage1Or2Workload(model, args)
-        if args.stage == 3:
-            from workload_generator.SimAI_deepspeed_stage3_workload_generator import (
-                DeepSpeedSIMAIStage3Workload,
-            )
-
-            return DeepSpeedSIMAIStage3Workload(model, args)
-        raise ValueError(f"Unsupported DeepSpeed ZeRO stage: {args.stage}")
+        return create_deepspeed_simai_workload(model, args)
 
 
 __all__ = [
     "BaseDeepSpeedSIMAIWorkload",
     "DeepSpeedSIMAIWorkload",
     "Work_Item",
+    "create_deepspeed_simai_workload",
 ]

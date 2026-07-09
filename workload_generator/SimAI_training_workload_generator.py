@@ -14,15 +14,15 @@ limitations under the License.
 from workload_generator.mocked_model.training import MockedDeepSeek
 import workload_generator.mocked_model.training.MockedDeepspeed
 from workload_generator.mocked_model.training.MockedDeepspeed import DeepspeedForCausalLM
-from workload_generator.SimAI_deepspeed_workload_generator import DeepSpeedSIMAIWorkload
+from workload_generator.SimAI_deepspeed_workload_generator import create_deepspeed_simai_workload
 from workload_generator.mocked_model.training.MockedMegatron import *
 from workload_generator.mocked_model.training.MockedDeepSeek import *
 from workload_generator.mocked_model.MockedModel import MockedParam, MockedModel
+from workload_generator.simai_work_item import Work_Item
 from utils.utils import CommType, get_params, get_comp_out, extract_averages
 import os
 from typing import List, Tuple
 from collections import deque
-import dataclasses
 from enum import Enum
 
 try:
@@ -32,26 +32,6 @@ except ImportError as e:
     print("Failed to import 'torch'.")
 import math
 import re
-
-
-
-
-
-@dataclasses.dataclass
-class Work_Item:
-    name: str = dataclasses.field(default="none")
-    placeholder: int = dataclasses.field(default=-1)
-    forward_compute_time: int = dataclasses.field(default=0)
-    forward_comm: str = dataclasses.field(default="NONE")
-    forward_comm_size: int = dataclasses.field(default=0)
-    backward_compute_time: int = dataclasses.field(default=0)
-    backward_comm: str = dataclasses.field(default="NONE")
-    backward_comm_size: int = dataclasses.field(default=0)
-    dp_compute_time: int = dataclasses.field(default=0)
-    dp_comm: str = dataclasses.field(default="NONE")
-    dp_comm_size: int = dataclasses.field(default=0)
-    process_time: int = dataclasses.field(default=100)
-
 
 
 def _get_aiob_compute_time(compute_cache, forward_or_backward, stage, dowarn=True):
@@ -946,9 +926,13 @@ if __name__ == "__main__":
     result_dir = "results/workload/"
     if not os.path.isdir(result_dir):
         os.makedirs(result_dir)
-    filename = f"{args.gpu_type}-{args.model_name}-world_size{args.world_size}-tp{args.tensor_model_parallel_size}-pp{args.pipeline_model_parallel}-ep{args.expert_model_parallel_size}-gbs{args.global_batch}-mbs{args.micro_batch}-seq{args.seq_length}-MOE-{args.moe_enable}-GEMM-{args.moe_grouped_gemm}-flash_attn-{args.use_flash_attn}"
+    gpu_type = args.gpu_type or "unknown_gpu"
+    filename = f"{gpu_type}-{args.model_name}-world_size{args.world_size}-tp{args.tensor_model_parallel_size}-pp{args.pipeline_model_parallel}-ep{args.expert_model_parallel_size}-gbs{args.global_batch}-mbs{args.micro_batch}-seq{args.seq_length}-MOE-{args.moe_enable}-GEMM-{args.moe_grouped_gemm}-flash_attn-{args.use_flash_attn}"
     if args.frame == "DeepSpeed":
-        filename += f"-deepspeed_zero{args.stage}"
+        filename += (
+            f"-deepspeed_zero{args.stage}"
+            f"-{args.simai_deepspeed_granularity}"
+        )
     filepath = os.path.join(result_dir, filename)
     params = model.parameters()
     # work = SIMAI_workload(model, args, GPU_Tensor_core.A100, "gpt13B")
@@ -992,7 +976,7 @@ if __name__ == "__main__":
         if args.aiob_enable and args.frame == "DeepSpeed":
             print("[WARN]: DeepSpeed SimAI workload does not support aiob_enable; using default compute time")
         if args.frame == "DeepSpeed":
-            work = DeepSpeedSIMAIWorkload(model, args)
+            work = create_deepspeed_simai_workload(model, args)
         else:
             work = SIMAI_workload(model, args, None)
         name_layers = work.workload_generate()
