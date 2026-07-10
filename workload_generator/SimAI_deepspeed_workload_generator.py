@@ -166,6 +166,15 @@ class BaseDeepSpeedSIMAIWorkload:
             dp_comm_size=dp_comm_size,
         )
 
+    def _append_ga_boundary(self):
+        """Mark an AICB GA boundary without adding compute or communication."""
+        self._append_item(
+            name=f"zero{self.args.stage}_ga_boundary",
+            forward_compute_time=0,
+            backward_compute_time=0,
+            dp_compute_time=0,
+        )
+
     def _append_simai_post_items(self):
         """Append generic SimAI post-layer rows for scheduler compatibility."""
         if not self.compute_enable:

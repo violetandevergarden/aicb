@@ -194,7 +194,7 @@ class DeepSpeedSIMAIStage3Workload(BaseDeepSpeedSIMAIWorkload):
         self._reset_param_prefetch_queue()
 
     def _append_stage3_step(self, persistent_params):
-        self._flush_reduce_bucket("zero3_grad_reduce_scatter")
+        self._flush_reduce_bucket("zero3_step_grad_reduce_scatter")
         self._append_dp_comm_item(
             "zero3_has_overflow", dp_comm="ALLREDUCE", dp_comm_size=1
         )
@@ -215,9 +215,11 @@ class DeepSpeedSIMAIStage3Workload(BaseDeepSpeedSIMAIWorkload):
     def _append_stage3(self):
         persistent_params = self._mark_persistent_parameters()
         self._reset_param_prefetch_queue()
-        for _ in range(self.ga_num):
+        for ga_index in range(self.ga_num):
             self._append_stage3_forward()
             self._append_stage3_backward()
+            if ga_index + 1 < self.ga_num:
+                self._append_ga_boundary()
         self._append_stage3_step(persistent_params)
 
     def workload_generate(self):
@@ -286,7 +288,9 @@ class DeepSpeedSIMAIStage3LayerWorkload(BaseDeepSpeedSIMAIWorkload):
                 "[WARN]: DeepSpeed layer granularity matched no layers; "
                 "falling back to step-only ZeRO items"
             )
-        for _ in range(self.ga_num):
+        for ga_index in range(self.ga_num):
             self._append_layer_stage3_forward(layer_specs)
             self._append_layer_stage3_backward(layer_specs)
+            if ga_index + 1 < self.ga_num:
+                self._append_ga_boundary()
         self._append_layer_stage3_step()

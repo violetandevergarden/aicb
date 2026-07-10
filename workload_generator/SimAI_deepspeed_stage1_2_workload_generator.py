@@ -101,10 +101,12 @@ class DeepSpeedSIMAIStage1Or2Workload(BaseDeepSpeedSIMAIWorkload):
             )
 
     def _append_stage1_or_2(self):
-        for _ in range(self.ga_num):
+        for ga_index in range(self.ga_num):
             for index, param in enumerate(self.all_params):
                 self._append_compute_for_param("forward", param, index)
             self._append_stage1_or_2_backward()
+            if ga_index + 1 < self.ga_num:
+                self._append_ga_boundary()
 
         self._append_dp_comm_item(
             f"zero{self.args.stage}_has_overflow",
@@ -153,7 +155,7 @@ class DeepSpeedSIMAIStage1Or2LayerWorkload(DeepSpeedSIMAIStage1Or2Workload):
                 "falling back to step-only ZeRO items"
             )
 
-        for _ in range(self.ga_num):
+        for ga_index in range(self.ga_num):
             for spec in layer_specs:
                 self._append_layer_compute_item(
                     spec["name"],
@@ -171,6 +173,8 @@ class DeepSpeedSIMAIStage1Or2LayerWorkload(DeepSpeedSIMAIStage1Or2Workload):
                     dp_compute_time=self.default_compute_time,
                 )
                 self._append_layer_grad_sync(spec["name"], spec["params"], param_bytes)
+            if ga_index + 1 < self.ga_num:
+                self._append_ga_boundary()
 
         self._append_dp_comm_item(
             f"zero{self.args.stage}_has_overflow",

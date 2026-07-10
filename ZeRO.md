@@ -225,10 +225,20 @@ zero3_backward_param_allgather
 zero3_backward_param_{id}
 zero3_backward_param_{id}_weight_grad
 zero3_grad_reduce_scatter
+zero3_step_grad_reduce_scatter
 zero3_has_overflow
 zero3_grad_norm
 zero3_step_persistent_param_allgather
 ```
+
+`zero3_step_grad_reduce_scatter` is emitted only when the final parameter-mode
+gradient bucket is flushed during the optimizer step. In-loop bucket flushes
+retain the name `zero3_grad_reduce_scatter`.
+
+For `ga > 1`, all DeepSpeed SimAI modes emit `zero{stage}_ga_boundary` between
+microbatch iterations. It is a metadata-only row with zero compute and
+communication, used by the scheduler because prefetch and bucket flushes can
+make different GA iterations contain different numbers of rows.
 
 After ZeRO-specific step communication, the SimAI DeepSpeed generator also
 appends the generic SimAI post-layer rows:
