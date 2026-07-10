@@ -76,7 +76,11 @@ class DeepSpeedSIMAIStage1Or2Workload(BaseDeepSpeedSIMAIWorkload):
     def _append_total_sharded_allgather(self, name):
         if self.total_params == 0:
             return
-        num_shards = max(self.total_params // self.args.allgather_bucket_size, 1)
+        num_shards = max(
+            (self.total_params + self.args.allgather_bucket_size - 1)
+            // self.args.allgather_bucket_size,
+            1,
+        )
         shard_size = self.total_params // num_shards
         for index in range(num_shards):
             num_elements = (

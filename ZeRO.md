@@ -243,16 +243,20 @@ optimizer3
 optimizer4
 ```
 
-These rows match the existing `SIMAI_workload` abstraction and keep
-`simai-flow-scheduler` post-item grouping compatible with ordinary AICB
-training workloads.
+These rows retain the existing `SIMAI_workload` post-step abstraction. Their
+order is part of the generated workload contract: ZeRO-specific step traffic
+comes first, followed by `cross_entropy*` and `optimizer*`. Consumers must
+construct the corresponding dependencies without changing this AICB order.
 
-ZeRO-3 layer-level behavior:
+ZeRO-3 layer-level behavior is an **unbucketed module approximation**. It is
+not a compressed form of parameter-level ZeRO-3 and does not model exact
+prefetch buckets, live-parameter limits, parameter persistence, or final
+bucket flushes.
 
 - Keeps `SIMAI_workload`-style names such as `embedding_layer`, `layernorm`, `attention_layer`, and `mlp_layer`.
-- Emits ZeRO-3/FSDP-like all-gather before each layer/module forward compute.
-- Emits ZeRO-3/FSDP-like all-gather before each layer/module backward compute.
-- Emits reduce-scatter after each layer/module backward weight-gradient compute.
+- Emits one DP all-gather before each module forward compute.
+- Emits one DP all-gather before each module backward compute.
+- Emits one DP reduce-scatter after each module backward weight-gradient compute.
 - Uses the layer/module parameter byte total as the communication size.
 - Does not include parameter ids in item names.
 
@@ -282,9 +286,10 @@ layernorm
 zero3_grad_reducescatter_layernorm
 ```
 
-ZeRO-1/2 also support `--simai_deepspeed_granularity layer`. Their layer-level
-mode keeps layer/module compute names and emits layer/module gradient
-synchronization rows such as:
+ZeRO-1/2 also support `--simai_deepspeed_granularity layer`, but they have a
+different approximation: they keep layer/module compute names and emit
+layer/module gradient synchronization rows, rather than ZeRO-3 parameter
+all-gathers, such as:
 
 ```text
 zero1_grad_sync_attention_layer
